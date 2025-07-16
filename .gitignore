@@ -1,0 +1,30 @@
+# Go build artefacts
+bin/
+*.exe
+*.out
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Local env / creds
+.env
+*.pem
+
+# Terraform junk
+.terraform/
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+
+# Kube
+.kube/
+
+# Archives
+*.tgz
+*.tar.gz
+*.zip

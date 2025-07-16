@@ -1,0 +1,3 @@
+Wiz Technical Demo 
+Author: Raouf Hadjer
+Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ") 
