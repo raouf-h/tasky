@@ -1,4 +1,4 @@
-me: Build and Rollout Image Only
+name: Build and Rollout Image Only
 
 on:
   push:
