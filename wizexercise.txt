@@ -1,3 +1,2 @@
-Wiz Technical Demo 
-Author: Raouf Hadjer Tot32  
-Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ") 
+Wiz Technical Demo  For Partnair Solution Architect Role
+Candidate : Raouf Hadjer 
