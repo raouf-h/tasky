@@ -1,4 +1,4 @@
-name: Build and Deploy to EKS
+me: Build and Rollout Image Only
 
 on:
   push:
@@ -7,7 +7,6 @@ on:
       - '**.go'
       - 'Dockerfile'
       - 'wizexercise.txt'
-      - 'k8s-manifests/**'
   workflow_dispatch:
 
 env:
@@ -20,6 +19,10 @@ env:
 jobs:
   build-push:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      image_tag: ${{ steps.set-tag.outputs.image_tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,45 +34,33 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Decide image tag (commit SHA)
+        id: set-tag
+        run: echo "image_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
       - name: Login to ECR
         run: |
-          aws ecr get-login-password --region $AWS_REGION |             docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }}
+          aws ecr get-login-password --region $AWS_REGION | \
+            docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }}
 
       - name: Build image
         run: |
-          docker build -t ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }} .
+          docker build -t ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:${{ steps.set-tag.outputs.image_tag }} .
 
       - name: Push image
         run: |
-          docker push ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}
+          docker push ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:${{ steps.set-tag.outputs.image_tag }}
 
       - name: Start ECR image scan (AWS native)
         run: |
-          aws ecr start-image-scan             --repository-name ${{ secrets.ECR_REPOSITORY }}             --image-id imageTag=${{ github.sha }} || true
+          aws ecr start-image-scan \
+            --repository-name ${{ secrets.ECR_REPOSITORY }} \
+            --image-id imageTag=${{ steps.set-tag.outputs.image_tag }} || true
 
-      - name: (Optional) Get scan findings
-        run: |
-          aws ecr describe-image-scan-findings             --repository-name ${{ secrets.ECR_REPOSITORY }}             --image-id imageTag=${{ github.sha }} || true
-
-      - name: Upload manifests for later jobs
-        uses: actions/upload-artifact@v4
-        with:
-          name: k8s-manifests
-          path: k8s-manifests/
-
-  deploy:
+  rollout:
     needs: build-push
-    runs-on: [self-hosted, bastion-eks]   # adapte le label si besoin
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download manifests
-        uses: actions/download-artifact@v4
-        with:
-          name: k8s-manifests
-          path: k8s-manifests/
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -78,21 +69,32 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Update kubeconfig
-        run: aws eks update-kubeconfig --region $AWS_REGION --name $CLUSTER_NAME
-
-      - name: Apply namespace
-        run: kubectl apply -f k8s-manifests/namespace.yaml --validate=false || true
-
-      - name: Apply core manifests
         run: |
-          kubectl apply -f k8s-manifests/tasky-env-secret.yaml -n $K8S_NAMESPACE --validate=false
-          kubectl apply -f k8s-manifests/service.yaml -n $K8S_NAMESPACE --validate=false
-          kubectl apply -f k8s-manifests/ingress.yaml -n $K8S_NAMESPACE --validate=false
+          aws eks update-kubeconfig --region $AWS_REGION --name $CLUSTER_NAME
 
-      - name: Apply deployment (if new) & update image
+      # Sécurité : vérifier que le déploiement existe AVANT de patcher
+      - name: Check deployment exists
+        id: check
         run: |
-          kubectl apply -f k8s-manifests/deployment.yaml -n $K8S_NAMESPACE --validate=false || true
-          kubectl -n $K8S_NAMESPACE set image deployment/$DEPLOYMENT_NAME             $CONTAINER_NAME=${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}
+          if ! kubectl -n $K8S_NAMESPACE get deployment/$DEPLOYMENT_NAME >/dev/null 2>&1; then
+            echo "Deployment $DEPLOYMENT_NAME not found in namespace $K8S_NAMESPACE !" >&2
+            exit 1
+          fi
 
-      - name: Wait for rollout
-        run: kubectl -n $K8S_NAMESPACE rollout status deployment/$DEPLOYMENT_NAME --timeout=300s
+      - name: Patch image (rolling update)
+        run: |
+          kubectl -n $K8S_NAMESPACE set image deployment/$DEPLOYMENT_NAME \
+            $CONTAINER_NAME=${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:${{ needs.build-push.outputs.image_tag }}
+
+      - name: Wait for rollout to complete
+        run: |
+          kubectl -n $K8S_NAMESPACE rollout status deployment/$DEPLOYMENT_NAME --timeout=300s
+
+      - name: Show pod images (proof)
+        run: |
+          echo "=== Pods ==="
+          kubectl -n $K8S_NAMESPACE get pods -o wide
+          echo
+          echo "=== Images ==="
+          kubectl -n $K8S_NAMESPACE get pods -o jsonpath='{range .items[*]}{.metadata.name}{" -> "}{range .spec.containers[*]}{.image}{"\n"}{end}{end}'
+
