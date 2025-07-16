@@ -13,6 +13,8 @@ WORKDIR /app
 COPY --from=build  /go/src/tasky/tasky .
 COPY --from=build  /go/src/tasky/assets ./assets
 
+
+#Add name
 COPY wizexercise.txt /app/wizexercise.txt
 
 EXPOSE 8080
